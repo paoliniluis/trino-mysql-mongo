@@ -1,0 +1,138 @@
+version: '3.9'
+services:
+  nginx-trino:
+    image: nginx:1.21.6-alpine
+    hostname: nginx
+    container_name: nginx-trino
+    volumes: 
+      - $PWD/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - $PWD/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - $PWD/nginx/certs/:/etc/nginx/conf.d/certs/
+    networks:
+      - metanet
+    ports:
+      - 8443:443
+      - 8080:80
+    cpus: 1
+    mem_limit: 128m
+    depends_on:
+      metabase-trino:
+        condition: service_healthy
+  metabase-trino:
+    build: 
+      context: metabase-starburst/.
+    container_name: metabase-trino
+    hostname: metabase
+    environment:
+      - JAVA_OPTS=-XX:MaxRAMPercentage=90
+      - "MB_EMAIL_SMTP_HOST=maildev-sub"
+      - "MB_EMAIL_SMTP_PASSWORD=password"
+      - "MB_EMAIL_SMTP_PORT=25"
+      - "MB_EMAIL_SMTP_SECURITY=none"
+      - "MB_EMAIL_SMTP_USERNAME=admin"
+      - "MB_DB_TYPE=postgres"
+      - "MB_DB_DBNAME=metabase"
+      - "MB_DB_PORT=5432"
+      - "MB_DB_USER=metabase"
+      - "MB_DB_PASS=mysecretpassword"
+      - "MB_DB_HOST=postgres-app-db"
+    volumes: 
+    - /dev/urandom:/dev/random:ro
+    networks: 
+      - metanet
+    healthcheck:
+      test: curl --fail -I http://localhost:3000/api/health || exit 1
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      postgres-app-db:
+        condition: service_healthy
+    cpus: 2
+    mem_limit: 2048m
+  postgres-app-db:
+    image: postgres:15.2-alpine
+    container_name: postgres-app-db
+    hostname: postgres-app-db
+    environment:
+      - "POSTGRES_USER=metabase"
+      - "POSTGRES_DB=metabase"
+      - "POSTGRES_PASSWORD=mysecretpassword"
+    volumes:
+      - $PWD/postgres_origin:/var/lib/postgresql/data
+    networks: 
+      - metanet
+    cpus: 1
+    mem_limit: 128m
+    command: -c log_statement=all
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U metabase -d metabase"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  setup-trino:
+    image: bash:5.1.16
+    container_name: setup-trino
+    volumes:
+      - $PWD/setup:/tmp
+    networks:
+      - metanet
+    depends_on:
+      metabase-trino:
+        condition: service_healthy
+      trino:
+        condition: service_healthy
+    command: sh /tmp/metabase-setup.sh metabase-trino:3000
+    cpus: 1
+    mem_limit: 128m
+  mysql-data1-trino:
+    image: metabase/qa-databases:mysql-sample-8
+    container_name: mysql-data1-trino
+    hostname: mysql-data1
+    networks: 
+      - metanet
+    cpus: 1
+    mem_limit: 512m
+    command: --general-log=1
+  mongo-data1:
+    image: paoliniluis/qa-databases:mongo-sample-5.0
+    container_name: mongo_5
+    hostname: mongo_5
+    networks: 
+      - metanet
+    cpus: 1
+    mem_limit: 128m
+  trino:
+    image: trinodb/trino:420
+    container_name: trino-server
+    hostname: trino-server
+    volumes: 
+    - /$PWD/trino-server/config.properties:/etc/trino/config.properties
+    - /$PWD/trino-server/mongodb.properties:/etc/trino/catalog/mongodb.properties
+    - /$PWD/trino-server/mysql.properties:/etc/trino/catalog/mysql.properties
+    restart: always
+    ports:
+      - 8444:8443
+    networks:
+      - metanet
+    cpus: 2
+    mem_limit: 1024m
+    healthcheck:
+      test: /usr/lib/trino/bin/health-check
+      interval: 30s
+      timeout: 30s
+      retries: 5
+      start_period: 30s
+  maildev-sub-postgres:
+    image: maildev/maildev:1.1.0
+    container_name: maildev-sub-postgres
+    hostname: maildev-sub
+    ports:
+    - 3003:80
+    networks:
+    - metanet
+    cpus: 1
+    mem_limit: 128m
+networks: 
+  metanet:
+    driver: bridge
